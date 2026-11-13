@@ -36,7 +36,12 @@ VARS_FD = WORK / "vars.fd"
 #   --installer-only                    Build the installer image and firmware files, then stop.
 #                                       Nothing runs build/winvm; Windows is installed on the iPad
 #                                       itself from work/ipad_stage/ (needs the patched iOS app).
+#   WINIOS_ESD=/path/to/file.esd        Retail ESD under any file name (scripts/ci_fetch_win11_esd.py).
+#   WINIOS_ESD_IMAGE="Windows 11 Pro"   Image (index or name) to install from the ESD. Default 6.
+#   WINIOS_DISK_GB=64                   Size of the Windows system disk in GB. Default 32.
 # ---------------------------------------------------------------------------------------------
+if os.environ.get("WINIOS_ESD"):
+    ESD = Path(os.environ["WINIOS_ESD"]).expanduser()
 _DOWNLOADS = WORK / "downloads"
 _ISOS = sorted(_DOWNLOADS.glob("*.iso")) if _DOWNLOADS.is_dir() else []
 if os.environ.get("WINIOS_ISO"):
@@ -52,6 +57,7 @@ NETKVM_DIR = WORK / "drivers" / "NetKVM"
 ISO_MNT = WORK / "_iso_mnt"
 IPAD_STAGE = WORK / "ipad_stage"
 WIMLIB = shutil.which("wimlib-imagex") or "/opt/homebrew/bin/wimlib-imagex"
+DISK_GB = int(os.environ.get("WINIOS_DISK_GB", "32"))
 
 
 def mount_iso():
@@ -94,7 +100,7 @@ def winpe_source():
 def install_source():
     """(wim, image) holding the edition to install: ESD image 6, or EDITION by name from the ISO."""
     if ISO is None:
-        return ESD, "6"
+        return ESD, os.environ.get("WINIOS_ESD_IMAGE", "6")
     src = iso_path("sources", "install.wim") or iso_path("sources", "install.esd")
     if src is None:
         sys.exit(f"{ISO} has no sources/install.wim or sources/install.esd")
@@ -304,6 +310,9 @@ PANTHER_UNATTEND_XML = r"""<?xml version="1.0" encoding="utf-8"?>
 
 # iPad / 26H2 addition: account and PC name come from WINIOS_USER / WINIOS_COMPUTER when set.
 PANTHER_UNATTEND_XML = PANTHER_UNATTEND_XML.replace("Ammaar", WIN_USER).replace("IPHONE-DUO", WIN_COMPUTER)
+# iPad / 26H2 addition: startnet.cmd finds the system disk by its size, as diskpart prints it.
+if DISK_GB != 32:
+    STARTNET_CMD = STARTNET_CMD.replace("32 GB", f"{DISK_GB} GB")
 
 
 def run(cmd, **kwargs):
@@ -474,7 +483,7 @@ def main():
     if WIN_IMG.exists():
         WIN_IMG.unlink()
     with open(WIN_IMG, "wb") as f:
-        f.truncate(32 * 1024 * 1024 * 1024)
+        f.truncate(DISK_GB * 1024 * 1024 * 1024)
 
     # Phase 1: Boot WinPE -> partition -> DISM unsplit install.wim -> offline reg + unattend -> bcdboot -> wpeutil shutdown
     run_winvm_phase("phase1_dism", ["--disk1", str(INST_IMG)], WORK / "prov_phase1.png", max_minutes=40)
