@@ -126,19 +126,11 @@ jobs:
           echo "WINIOS_ESD=$esd" >> "$GITHUB_ENV"
           echo "WINIOS_ESD_IMAGE=Windows 11 Pro" >> "$GITHUB_ENV"
 
+      # Windows on Arm loads only Microsoft-signed kernel drivers (unless test signing is on), so the
+      # attestation-signed virtio-win build is preferred over the stable ISO.
       - name: Fetch the NetKVM network driver (virtio-win)
         continue-on-error: true
-        run: |
-          set -euo pipefail
-          curl -fL --retry 3 -sS -o "$RUNNER_TEMP/virtio-win.iso" \
-            https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso
-          mkdir -p work/drivers/NetKVM "$RUNNER_TEMP/vw"
-          hdiutil attach -nobrowse -readonly -mountpoint "$RUNNER_TEMP/vw" "$RUNNER_TEMP/virtio-win.iso"
-          ls "$RUNNER_TEMP/vw/NetKVM" || true
-          cp "$RUNNER_TEMP/vw/NetKVM/w11/ARM64/"* work/drivers/NetKVM/
-          hdiutil detach "$RUNNER_TEMP/vw"
-          rm -f "$RUNNER_TEMP/virtio-win.iso"
-          ls -l work/drivers/NetKVM
+        run: .github/scripts/fetch_netkvm.sh
 
       - name: Build the installer image
         run: |
@@ -203,12 +195,9 @@ jobs:
         run: |
           set -euo pipefail
           tag="ipad-26h2-image-${GITHUB_RUN_NUMBER}"
-          # Drafts left by earlier runs would only take up space.
-          gh release list --repo "$GITHUB_REPOSITORY" --limit 50 --json tagName,isDraft \
-            --jq '.[] | select(.isDraft and (.tagName | startswith("ipad-26h2-image-"))) | .tagName' \
-            | while read -r old; do
-                [ -n "$old" ] && gh release delete "$old" --repo "$GITHUB_REPOSITORY" --yes || true
-              done
+          # Earlier drafts stay (someone may be downloading one); delete them on GitHub when done.
+          gh api "repos/$GITHUB_REPOSITORY/releases" \
+            --jq '.[] | select(.draft) | "existing draft: \(.name)"' || true
           media="$(grep -m1 '^Selected:' work/fetch.log | sed 's/^Selected: //' || true)"
           {
             echo "Windows 11 26H2 Arm64, installed and set up by the Provision workflow (run ${GITHUB_RUN_NUMBER})."
@@ -217,6 +206,8 @@ jobs:
             echo "Windows is not activated: it needs your own licence."
             echo
             echo "Source media: ${media}"
+            echo
+            cat work/netkvm_source.txt 2>/dev/null || echo "NetKVM: none (no network adapter driver)"
             echo
             echo "Put every file in Files > On My iPad > Windows 11 > Machines > Win11, then open the app."
           } > work/notes.md

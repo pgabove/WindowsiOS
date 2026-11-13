@@ -55,8 +55,8 @@ done
 if alive; then
   keep phase3_desktop
   say "winr";  sleep 10
-  say 'type cmd /k "ver & ipconfig"'; sleep 5
-  say "enter"; sleep 45
+  say 'type cmd /k "ver & ipconfig | findstr /c:adapter /c:IPv4 & curl -s -m 20 http://www.msftconnecttest.com/connecttest.txt & echo. & type C:\Drivers\pnputil.log"'; sleep 5
+  say "enter"; sleep 50
   keep phase3_ver_ipconfig
   status "after ver + ipconfig"
   say "winr";  sleep 10

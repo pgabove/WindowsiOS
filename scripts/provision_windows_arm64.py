@@ -200,6 +200,8 @@ if errorlevel 1 (
 if exist X:\Drivers\NetKVM\*.inf (
   echo [WIN11-PROVISION] Injecting virtio-win NetKVM Ethernet driver into the offline image...
   dism /Image:W:\ /Add-Driver /Driver:X:\Drivers\NetKVM /Recurse
+  echo [WIN11-PROVISION] Copying NetKVM to W:\Drivers\NetKVM for pnputil during setup...
+  xcopy X:\Drivers\NetKVM W:\Drivers\NetKVM\ /e /i /y /q
 )
 
 echo [WIN11-PROVISION] Injecting unattend.xml and offline registry settings...
@@ -310,6 +312,18 @@ PANTHER_UNATTEND_XML = r"""<?xml version="1.0" encoding="utf-8"?>
 
 # iPad / 26H2 addition: account and PC name come from WINIOS_USER / WINIOS_COMPUTER when set.
 PANTHER_UNATTEND_XML = PANTHER_UNATTEND_XML.replace("Ammaar", WIN_USER).replace("IPHONE-DUO", WIN_COMPUTER)
+# iPad / 26H2 addition: during setup (specialize pass, as SYSTEM) Windows adds the NetKVM driver that
+# startnet.cmd copied to C:\Drivers\NetKVM. pnputil puts it in the driver store, so the network adapter
+# gets it on the first boot with networking on. DISM /Add-Driver from this WinPE fails (0x80004002).
+PANTHER_UNATTEND_XML = PANTHER_UNATTEND_XML.replace(
+    "      </RunSynchronous>\n    </component>\n  </settings>\n\n  <settings pass=\"oobeSystem\">",
+    "        <RunSynchronousCommand wcm:action=\"add\">\n"
+    "          <Order>3</Order>\n"
+    "          <Path>cmd /c \"pnputil /add-driver C:\\Drivers\\NetKVM\\*.inf /install &gt; C:\\Drivers\\pnputil.log 2&gt;&amp;1 &amp; exit /b 0\"</Path>\n"
+    "        </RunSynchronousCommand>\n"
+    "      </RunSynchronous>\n    </component>\n  </settings>\n\n  <settings pass=\"oobeSystem\">",
+    1,
+)
 # iPad / 26H2 addition: startnet.cmd finds the system disk by its size, as diskpart prints it.
 if DISK_GB != 32:
     STARTNET_CMD = STARTNET_CMD.replace("32 GB", f"{DISK_GB} GB")
