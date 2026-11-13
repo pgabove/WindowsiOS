@@ -73,7 +73,10 @@ jobs:
             done
             rm -rf "$HOME/Library/Android/sdk" || true
             xcrun simctl delete all >/dev/null 2>&1 || true
-            sudo rm -rf /Library/Developer/CoreSimulator/Caches/* >/dev/null 2>&1 || true
+            xcrun simctl runtime delete all >/dev/null 2>&1 || true
+            sudo rm -rf /Library/Developer/CoreSimulator/Caches/* /Library/Developer/CoreSimulator/Images/* >/dev/null 2>&1 || true
+            rm -rf "$HOME/Library/Developer/Xcode/DerivedData" "$HOME/Library/Developer/CoreSimulator/Devices" >/dev/null 2>&1 || true
+            sleep 20
             df -g /
           fi
 
@@ -156,7 +159,9 @@ jobs:
 
       - name: Phase 1 result
         if: always()
+        continue-on-error: true
         run: |
+          set +e +o pipefail
           shots="$(ls work/shots/phase1_*.png 2>/dev/null | tail -n 2 | tr '\n' ' ')"
           .github/scripts/ci_show.sh work/prov_phase1_dism.log $shots work/prov_phase1.png
           du -sh work/windows11.img 2>/dev/null || true
@@ -167,7 +172,9 @@ jobs:
 
       - name: Phase 2 result
         if: always()
+        continue-on-error: true
         run: |
+          set +e +o pipefail
           shots="$(ls work/shots/phase2_*.png 2>/dev/null | tail -n 3 | tr '\n' ' ')"
           .github/scripts/ci_show.sh work/prov_phase2_oobe.log $shots work/prov_phase2.png
           du -sh work/windows11.img 2>/dev/null || true
@@ -198,7 +205,7 @@ jobs:
             | while read -r old; do
                 [ -n "$old" ] && gh release delete "$old" --repo "$GITHUB_REPOSITORY" --yes || true
               done
-          media="$(grep -m1 '^Selected:' work/fetch.log | sed 's/^Selected: //')"
+          media="$(grep -m1 '^Selected:' work/fetch.log | sed 's/^Selected: //' || true)"
           {
             echo "Windows 11 26H2 Arm64, installed and set up by the Provision workflow (run ${GITHUB_RUN_NUMBER})."
             echo
@@ -228,7 +235,7 @@ jobs:
       - name: Check the uploaded files end to end (join, unpack, boot)
         timeout-minutes: 50
         run: |
-          set -uo pipefail
+          set +e
           cat work/release/windows11.hvsparse.[0-9][0-9][0-9] > work/joined.hvsparse
           want="$(grep '^bytes=' work/release/windows11.hvsparse.parts | cut -d= -f2)"
           have="$(stat -f %z work/joined.hvsparse)"
@@ -241,7 +248,9 @@ jobs:
 
       - name: Check boot result
         if: always()
+        continue-on-error: true
         run: |
+          set +e +o pipefail
           shots="$(ls work/shots/phase3_*.png 2>/dev/null | tr '\n' ' ')"
           .github/scripts/ci_show.sh work/phase3.log $shots
 

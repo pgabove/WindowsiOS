@@ -2,8 +2,10 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Find, and optionally download, Microsoft's retail Windows 11 Arm64 ESD.
 
-Reads the public catalog (products.cab) that Microsoft's own Media Creation Tool reads, so the
-ESD comes straight from Microsoft's servers and is checked against the catalog's checksum.
+Reads the catalog (products.cab) that Microsoft's own Media Creation Tool reads, so the ESD
+comes straight from Microsoft's servers and is checked against the catalog's checksum. Since
+25H2 the tool asks Microsoft's update metadata service where the current catalog is; the older
+fixed link still serves the 24H2 catalog. Both are read here.
 
   --list                 Print the Arm64 entries for the language. Metadata only: nothing is
                          downloaded besides the small catalog itself.
@@ -16,7 +18,9 @@ Needs: curl, and cabextract or bsdtar (macOS tar).
 """
 
 import argparse
+import base64
 import hashlib
+import json
 import shutil
 import subprocess
 import sys
@@ -25,19 +29,83 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 CATALOG_URL = "https://go.microsoft.com/fwlink/?LinkId=2156292"
+# What Media Creation Tool 10.0.26100.7019 asks: "which products.cab is current?"
+FE3_SEARCH = "https://fe3.delivery.mp.microsoft.com/UpdateMetadataService/updates/search/v1/bydeviceinfo"
+FE3_QUERY = {"Products": "PN=Windows.Products.Cab.amd64&V=0.0.0.0",
+             "DeviceAttributes": "DUScan=1;OSVersion=10.0.26100.1"}
 
 
-def fetch_catalog(tmp: Path) -> Path:
-    cab = tmp / "products.cab"
-    subprocess.run(["curl", "-fsSL", "--retry", "3", "-o", str(cab), CATALOG_URL], check=True)
+def extract_catalog(cab: Path, tmp: Path) -> Path:
+    tmp.mkdir(parents=True, exist_ok=True)
     if shutil.which("cabextract"):
         subprocess.run(["cabextract", "-q", "-d", str(tmp), str(cab)], check=True)
     else:
         subprocess.run(["tar", "-xf", str(cab), "-C", str(tmp)], check=True)  # bsdtar (macOS) reads .cab
     xmls = sorted(tmp.glob("*.xml"))
     if not xmls:
-        sys.exit("products.cab held no XML catalog")
+        raise RuntimeError("products.cab held no XML catalog")
     return xmls[0]
+
+
+def fetch_catalog(tmp: Path) -> Path:
+    """The catalog behind the fixed link (24H2 and older media)."""
+    cab = tmp / "products.cab"
+    subprocess.run(["curl", "-fsSL", "--retry", "3", "-o", str(cab), CATALOG_URL], check=True)
+    return extract_catalog(cab, tmp / "x")
+
+
+def digest_matches(path: Path, digest: str):
+    """True/False when the digest is a SHA-256 or SHA-1 in base64 or hex; None when it is neither."""
+    forms = []
+    try:
+        forms.append(base64.b64decode(digest, validate=True))
+    except Exception:
+        pass
+    try:
+        forms.append(bytes.fromhex(digest))
+    except ValueError:
+        pass
+    for raw in forms:
+        algo = {32: "sha256", 20: "sha1"}.get(len(raw))
+        if algo:
+            return hashlib.new(algo, path.read_bytes()).digest() == raw
+    return None
+
+
+def fetch_catalog_fe3(tmp: Path) -> Path:
+    """The current catalog, located through Microsoft's update metadata service."""
+    reply = subprocess.run(
+        ["curl", "-sS", "--retry", "3", "-X", "POST", "-H", "Content-Type: application/json",
+         "-H", "Accept: application/json", "--data", json.dumps(FE3_QUERY), FE3_SEARCH],
+        check=True, capture_output=True, text=True).stdout
+    try:
+        data = json.loads(reply)
+    except ValueError:
+        raise RuntimeError(f"metadata service did not answer with JSON: {reply[:600]!r}")
+    found = None
+    for entry in data if isinstance(data, list) else [data]:
+        if not isinstance(entry, dict):
+            continue
+        files = entry.get("FileLocations") or []
+        for f in files if isinstance(files, list) else [files]:
+            if isinstance(f, dict) and str(f.get("FileName", "")).lower().endswith(".cab") and f.get("Url"):
+                found = found or (entry, f)
+    if not found:
+        raise RuntimeError(f"metadata service listed no products.cab: {reply[:600]!r}")
+    entry, f = found
+    host = f["Url"].split("/")[2] if "//" in f["Url"] else "?"
+    print(f"Metadata service: update {entry.get('UpdateIds')}, {f.get('FileName')} {f.get('Size')} bytes"
+          f" from {host}", flush=True)
+    if not host.endswith(".microsoft.com"):
+        raise RuntimeError(f"unexpected catalog host {host}")
+    cab = tmp / "products_fe3.cab"
+    subprocess.run(["curl", "-fsSL", "--retry", "3", "-o", str(cab), f["Url"]], check=True)
+    ok = digest_matches(cab, str(f.get("Digest") or ""))
+    if ok is False:
+        raise RuntimeError("products.cab does not match the digest the metadata service gave")
+    print(f"products.cab: {cab.stat().st_size} bytes, digest "
+          f"{'verified' if ok else 'not checked (format ' + repr(str(f.get('Digest'))[:12]) + ')'}", flush=True)
+    return extract_catalog(cab, tmp / "x_fe3")
 
 
 def catalog_files(xml_path: Path):
@@ -92,8 +160,17 @@ def main():
     ap.add_argument("--lang", default="en-us")
     args = ap.parse_args()
 
+    entries = []
     with tempfile.TemporaryDirectory() as t:
-        entries = catalog_files(fetch_catalog(Path(t)))
+        for name, fetch in (("metadata service", fetch_catalog_fe3), ("fixed link", fetch_catalog)):
+            try:
+                got = catalog_files(fetch(Path(t)))
+                print(f"Catalog via {name}: {len(got)} file entries", flush=True)
+                entries += got
+            except Exception as exc:
+                print(f"Catalog via {name}: failed ({exc})", flush=True)
+    if not entries:
+        sys.exit("No catalog could be read")
     esds = arm64_esds(entries, args.lang)
     print(f"Catalog: {len(entries)} file entries, {len(esds)} Arm64 ESD(s) for {args.lang}", flush=True)
     for e in esds:
