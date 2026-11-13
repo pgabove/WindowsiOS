@@ -471,6 +471,26 @@ static void join_progress_cb(double frac, void *opaque) {
     [self startConfiguredVMInDirectory:dir];
 }
 
+/* iPad addition: Windows' screen resolution, from the "Smooth"/"Sharp" setting and this device's screen
+   (landscape). Needs the firmware built from firmware/; stock firmware ignores it and stays at 800x600. */
+- (void)chosenScreenWidth:(uint32_t *)outW height:(uint32_t *)outH {
+    *outW = 0;
+    *outH = 0;
+    NSString *mode = [[NSUserDefaults standardUserDefaults] stringForKey:@"WinIOSDisplayMode"] ?: @"smooth";
+    if ([mode isEqualToString:@"classic"]) return;
+    CGRect nb = [UIScreen mainScreen].nativeBounds;
+    double w = MAX(nb.size.width, nb.size.height), h = MIN(nb.size.width, nb.size.height);
+    if (![mode isEqualToString:@"sharp"]) {
+        w /= 2.0;
+        h /= 2.0;
+    }
+    double fit = MIN(1.0, MIN(4096.0 / w, 4096.0 / h));
+    uint32_t fw = ((uint32_t)(w * fit)) & ~3u, fh = ((uint32_t)(h * fit)) & ~1u;
+    if (fw < 640 || fh < 480) return;
+    *outW = fw;
+    *outH = fh;
+}
+
 - (void)startConfiguredVMInDirectory:(NSString *)dir {
     if (_vmRunning) return;
     [self configureAudioSessionAndMicPermission];
@@ -516,6 +536,8 @@ static void join_progress_cb(double frac, void *opaque) {
 
     _configuredRamMB = ramMB;
     _configuredCPUs = 4;
+    uint32_t fbW = 0, fbH = 0;
+    [self chosenScreenWidth:&fbW height:&fbH];
 
     HvWinVmConfig cfg = {
         .code_fd = codePath.fileSystemRepresentation,
@@ -534,6 +556,8 @@ static void join_progress_cb(double frac, void *opaque) {
         .enable_sound = 1,
         .log = 0,
         .stats_interval = 0,
+        .fb_width = fbW,
+        .fb_height = fbH,
     };
 
     char err[256] = {0};
@@ -556,6 +580,7 @@ static void join_progress_cb(double frac, void *opaque) {
     _lastWfiTicks = 0;
     _lastWfiIdlePct = 0.0;
     _vmStatus = [NSString stringWithFormat:@"Running Windows 11 ARM64 (%d vCPUs, %llu MB RAM)", _configuredCPUs, _configuredRamMB];
+    if (fbW) _vmStatus = [_vmStatus stringByAppendingFormat:@" - screen %ux%u", fbW, fbH];
     if (installerAttached) _vmStatus = [_vmStatus stringByAppendingString:@" - installer.img attached, network off"];
     [[UIApplication sharedApplication] setIdleTimerDisabled:YES];
 

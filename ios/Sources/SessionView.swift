@@ -53,6 +53,28 @@ struct SessionView: View {
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
         .defersSystemGestures(on: .all)
+        .alert("Display: \(vm.displayMode == "sharp" ? "Sharp" : "Smooth")", isPresented: $vm.displayModeNotice) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(vm.displayMode == "sharp"
+                 ? "Every Retina pixel, Windows at 200%. Sharpest, but more work for the iPad. Applies the next time Windows starts (Start > Power > Shut down, then Boot)."
+                 : "Half the Retina pixels, Windows at 100%. Faster and smoother. Applies the next time Windows starts (Start > Power > Shut down, then Boot).")
+        }
+    }
+
+    // iPad addition: Windows filling the whole screen (used when the toolbar is hidden in landscape).
+    private func edgeToEdgeDisplay() -> some View {
+        MetalDisplayView(
+            trackpadMode: $vm.trackpadMode,
+            rightClickArmed: $vm.rightClickArmed,
+            keyboardVisible: $vm.systemKeyboardVisible,
+            onThreeFingerTap: {
+                withAnimation(.spring(response: 0.25, dampingFraction: 0.86)) {
+                    vm.controlBarVisible.toggle()
+                }
+            }
+        )
+        .ignoresSafeArea()
     }
 
     // MARK: - 1. Sleek Midnight-Sapphire Surface Laptop Ultra Clamshell Mode (Folded)
@@ -208,6 +230,10 @@ struct SessionView: View {
 
                     Spacer(minLength: safeBottom)
                 }
+            } else if !vm.controlBarVisible {
+                // iPad addition: toolbar hidden = Windows edge to edge, so "Sharp" maps pixel for pixel
+                // and "Smooth" exactly 2x. Three-finger tap (or the button bottom-left) brings the toolbar back.
+                edgeToEdgeDisplay()
             } else {
                 // Landscape Open Canvas: Maximum Edge-to-Edge Framed Display
                 framedStudioDisplay(
@@ -223,6 +249,24 @@ struct SessionView: View {
                         .padding(.top, safeTop)
                         .padding(.horizontal, 14)
                         .transition(.move(edge: .top).combined(with: .opacity))
+                } else if !isPortrait {
+                    Spacer()
+                    HStack {
+                        Button {
+                            uiHaptic.impactOccurred()
+                            withAnimation(.spring(response: 0.25, dampingFraction: 0.86)) {
+                                vm.controlBarVisible = true
+                            }
+                        } label: {
+                            WindowsLogoMark(size: 9, color: .white.opacity(0.85))
+                                .padding(9)
+                                .background(Color(red: 0.05, green: 0.065, blue: 0.11).opacity(0.55), in: Circle())
+                        }
+                        .buttonStyle(.plain)
+                        Spacer()
+                    }
+                    .padding(.leading, 6)
+                    .padding(.bottom, 6)
                 } else {
                     HStack {
                         Spacer()
@@ -251,7 +295,9 @@ struct SessionView: View {
                         .padding(.trailing, 16)
                     }
                 }
-                Spacer()
+                if vm.controlBarVisible || isPortrait {
+                    Spacer()
+                }
             }
         }
     }
@@ -491,6 +537,11 @@ struct SessionView: View {
                     vm.trackpadMode.toggle()
                 }
 
+                studioPillItem(icon: "display", label: vm.displayMode == "sharp" ? "Sharp" : "Smooth") {
+                    vm.displayMode = vm.displayMode == "sharp" ? "smooth" : "sharp"
+                    vm.displayModeNotice = true
+                }
+
                 studioPillItem(icon: "computermouse", label: "R-Click", active: vm.rightClickArmed) {
                     vm.rightClickArmed.toggle()
                 }
@@ -607,6 +658,13 @@ struct SessionView: View {
             }
 
             if !vm.isUnpacking {
+                Picker("Display", selection: $vm.displayMode) {
+                    Text("Smooth").tag("smooth")
+                    Text("Sharp (Retina)").tag("sharp")
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 260)
+
                 HStack(spacing: 10) {
                     if !vm.isJITLive {
                         Button {

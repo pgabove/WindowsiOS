@@ -88,6 +88,12 @@ final class VMViewModel: ObservableObject {
     @Published var systemKeyboardVisible: Bool = false
     @Published var activeSafariURL: IdentifiableURL? = nil
     @Published var useSafariForOAuth: Bool = WinIOSBridge.shared.useSafariForGuestLinks
+    // iPad addition: Windows' screen resolution. "smooth" = half the iPad's pixels (Windows at 100%),
+    // "sharp" = every pixel (Windows at 200%). Read by the bridge when Windows starts.
+    @Published var displayMode: String = UserDefaults.standard.string(forKey: "WinIOSDisplayMode") ?? "smooth" {
+        didSet { UserDefaults.standard.set(displayMode, forKey: "WinIOSDisplayMode") }
+    }
+    @Published var displayModeNotice: Bool = false
 
     private var didAutoLaunchAttempt = false
     private var oauthPollTimer: Timer? = nil

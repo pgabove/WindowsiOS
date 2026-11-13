@@ -5,10 +5,14 @@
 #import <ImageIO/ImageIO.h>
 #import <TargetConditionals.h>
 
+#include <math.h>
 #include <os/lock.h>
+#include <stdio.h>
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <unistd.h>
 
 #include "fb_display.h"
 
@@ -31,6 +35,11 @@ static NSString *const kFbShaderSource =
      "    constexpr sampler s(mag_filter::linear, min_filter::linear, address::clamp_to_edge);\n"
      "    float4 c = tex.sample(s, in.uv);\n"
      "    return float4(c.rgb, 1.0);\n"
+     "}\n"
+     "fragment float4 fb_fs_nearest(VOut in [[stage_in]], texture2d<float> tex [[texture(0)]]) {\n"
+     "    constexpr sampler s(mag_filter::nearest, min_filter::nearest, address::clamp_to_edge);\n"
+     "    float4 c = tex.sample(s, in.uv);\n"
+     "    return float4(c.rgb, 1.0);\n"
      "}\n";
 
 @interface HvFbMetalPresenter : NSObject {
@@ -47,6 +56,18 @@ static NSString *const kFbShaderSource =
     _Atomic(uint64_t) framesPresented;
     uint64_t lastHash;
     CGSize lastDrawableSize;
+    /* iPad addition (sharp, smooth display): */
+    id<MTLRenderPipelineState> pipelineNearest; /* for whole-number scale factors: crisp pixels */
+    id<MTLBuffer> fbBuffer;                     /* guest framebuffer seen directly by the GPU, no copy */
+    const uint8_t *texSrc;                      /* framebuffer the texture was made for */
+    uint32_t texStride;
+    BOOL zeroCopy;
+    uint64_t lastPresentNs;
+    dispatch_queue_t tickQueue;
+#if TARGET_OS_IPHONE
+    CADisplayLink *displayLink;                 /* up to 120 Hz on ProMotion screens */
+    _Atomic(int) tickPending;
+#endif
 }
 - (instancetype)initWithDisplay:(HvFbDisplay *)display;
 - (void)setTargetLayer:(CAMetalLayer *)newLayer;
@@ -70,6 +91,8 @@ static NSString *const kFbShaderSource =
                 pd.fragmentFunction = [lib newFunctionWithName:@"fb_fs"];
                 pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
                 pipeline = [device newRenderPipelineStateWithDescriptor:pd error:&err];
+                pd.fragmentFunction = [lib newFunctionWithName:@"fb_fs_nearest"];
+                pipelineNearest = [device newRenderPipelineStateWithDescriptor:pd error:&err];
             }
         }
     }
@@ -90,9 +113,18 @@ static NSString *const kFbShaderSource =
         if ([NSThread isMainThread]) cfg();
         else dispatch_async(dispatch_get_main_queue(), cfg);
 
+        if (!tickQueue) tickQueue = dispatch_queue_create("me.ammaar.windowsios.fbmetal", DISPATCH_QUEUE_SERIAL);
+#if TARGET_OS_IPHONE
+        /* iPad addition: frames paced by the display (up to 120 Hz on ProMotion) instead of a 60 Hz timer. */
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (self->displayLink) return;
+            self->displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(displayLinkFired:)];
+            self->displayLink.preferredFrameRateRange = CAFrameRateRangeMake(30, 120, 120);
+            [self->displayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+        });
+#else
         if (!timer) {
-            dispatch_queue_t q = dispatch_queue_create("me.ammaar.windowsios.fbmetal", DISPATCH_QUEUE_SERIAL);
-            timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, q);
+            timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, tickQueue);
             dispatch_source_set_timer(timer, DISPATCH_TIME_NOW, NSEC_PER_SEC / 60, 2 * NSEC_PER_MSEC);
             __weak HvFbMetalPresenter *weakSelf = self;
             dispatch_source_set_event_handler(timer, ^{
@@ -100,11 +132,79 @@ static NSString *const kFbShaderSource =
             });
             dispatch_resume(timer);
         }
-    } else if (!layer && timer) {
-        dispatch_source_cancel(timer);
-        timer = nil;
+#endif
+    } else if (!layer) {
+#if TARGET_OS_IPHONE
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self->displayLink invalidate];
+            self->displayLink = nil;
+        });
+#else
+        if (timer) {
+            dispatch_source_cancel(timer);
+            timer = nil;
+        }
+#endif
     }
     os_unfair_lock_unlock(&lock);
+}
+
+#if TARGET_OS_IPHONE
+- (void)displayLinkFired:(CADisplayLink *)link {
+    (void)link;
+    int expected = 0;
+    if (!atomic_compare_exchange_strong(&tickPending, &expected, 1)) return; /* previous frame still drawing */
+    dispatch_async(tickQueue, ^{
+        [self tick];
+        atomic_store(&self->tickPending, 0);
+    });
+}
+#endif
+
+/* iPad addition: a texture for the guest framebuffer. Where Metal accepts the guest memory as a
+   buffer, the texture reads it directly (no per-frame copy of up to 22 MB); otherwise a copy is made. */
+- (void)rebuildTextureFor:(const uint8_t *)px width:(uint32_t)w height:(uint32_t)h stride:(uint32_t)stride {
+    texture = nil;
+    fbBuffer = nil;
+    zeroCopy = NO;
+    MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                                                                  width:w
+                                                                                 height:h
+                                                                              mipmapped:NO];
+    td.usage = MTLTextureUsageShaderRead;
+    if (!getenv("HV_FB_COPY")) {
+        uintptr_t page = (uintptr_t)getpagesize();
+        uintptr_t start = (uintptr_t)px & ~(page - 1);
+        size_t offset = (size_t)((uintptr_t)px - start);
+        size_t len = offset + (size_t)stride * (h - 1) + (size_t)w * 4;
+        len = (len + page - 1) & ~(size_t)(page - 1);
+        NSUInteger align = [device minimumLinearTextureAlignmentForPixelFormat:MTLPixelFormatBGRA8Unorm];
+        if (align && stride % align == 0 && offset % align == 0) {
+            fbBuffer = [device newBufferWithBytesNoCopy:(void *)start
+                                                 length:len
+                                                options:MTLResourceStorageModeShared
+                                            deallocator:nil];
+            if (fbBuffer) {
+                td.storageMode = MTLStorageModeShared;
+                texture = [fbBuffer newTextureWithDescriptor:td offset:offset bytesPerRow:stride];
+                zeroCopy = texture != nil;
+                if (!zeroCopy) fbBuffer = nil;
+            }
+        }
+    }
+    if (!texture) {
+        MTLTextureDescriptor *plain = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                                                                         width:w
+                                                                                        height:h
+                                                                                     mipmapped:NO];
+        plain.usage = MTLTextureUsageShaderRead;
+        texture = [device newTextureWithDescriptor:plain];
+    }
+    texSrc = px;
+    texW = w;
+    texH = h;
+    texStride = stride;
+    fprintf(stderr, "winvm: display %ux%u, %s\n", w, h, zeroCopy ? "zero-copy" : "copied each frame");
 }
 
 static uint64_t quick_frame_hash(const uint8_t *px, uint32_t w, uint32_t h, uint32_t stride) {
@@ -125,7 +225,18 @@ static uint64_t quick_frame_hash(const uint8_t *px, uint32_t w, uint32_t h, uint
     @autoreleasepool {
         const uint8_t *px = NULL;
         uint32_t w = 0, h = 0, stride = 0;
-        if (hv_fb_display_get_frame(fb, &px, &w, &h, &stride) != 0) return;
+        if (hv_fb_display_get_frame(fb, &px, &w, &h, &stride) != 0) {
+            /* No framebuffer (VM stopped or not started): let go of any view of guest memory. */
+            os_unfair_lock_lock(&lock);
+            if (fbBuffer) {
+                texture = nil;
+                fbBuffer = nil;
+                texSrc = NULL;
+                zeroCopy = NO;
+            }
+            os_unfair_lock_unlock(&lock);
+            return;
+        }
 
         os_unfair_lock_lock(&lock);
         CAMetalLayer *curLayer = layer;
@@ -140,28 +251,30 @@ static uint64_t quick_frame_hash(const uint8_t *px, uint32_t w, uint32_t h, uint
             return;
         }
 
-        uint64_t hval = quick_frame_hash(px, w, h, stride);
-        BOOL sizeChanged = !CGSizeEqualToSize(dsize, lastDrawableSize);
-        if (hval == lastHash && !sizeChanged && texW == w && texH == h) {
+        BOOL configChanged = !texture || px != texSrc || w != texW || h != texH || stride != texStride;
+        if (configChanged) [self rebuildTextureFor:px width:w height:h stride:stride];
+        if (!texture) {
             os_unfair_lock_unlock(&lock);
             return;
         }
 
-        if (!texture || texW != w || texH != h) {
-            MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
-                                                                                          width:w
-                                                                                         height:h
-                                                                                      mipmapped:NO];
-            td.usage = MTLTextureUsageShaderRead;
-            texture = [device newTextureWithDescriptor:td];
-            texW = w;
-            texH = h;
+        /* Present when the sampled hash changes. The hash only samples the screen, so small changes
+           (a typed letter, a caret) could slip through; a regular refresh catches those too. */
+        uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+        uint64_t hval = quick_frame_hash(px, w, h, stride);
+        BOOL sizeChanged = !CGSizeEqualToSize(dsize, lastDrawableSize);
+        uint64_t refreshNs = zeroCopy ? 33000000ull : 100000000ull;
+        if (!configChanged && !sizeChanged && hval == lastHash && now - lastPresentNs < refreshNs) {
+            os_unfair_lock_unlock(&lock);
+            return;
         }
 
-        [texture replaceRegion:MTLRegionMake2D(0, 0, w, h)
-                   mipmapLevel:0
-                     withBytes:px
-                   bytesPerRow:stride];
+        if (!zeroCopy) {
+            [texture replaceRegion:MTLRegionMake2D(0, 0, w, h)
+                       mipmapLevel:0
+                         withBytes:px
+                       bytesPerRow:stride];
+        }
 
         id<CAMetalDrawable> drawable = [curLayer nextDrawable];
         if (!drawable) {
@@ -178,6 +291,12 @@ static uint64_t quick_frame_hash(const uint8_t *px, uint32_t w, uint32_t h, uint
             scale[1] = dstAspect / srcAspect;
         }
 
+        /* Whole-number scale factors (Sharp at 1x, Smooth at 2x) get nearest-neighbour sampling, so
+           each Windows pixel stays crisp instead of being blurred across its neighbours. */
+        double rx = dsize.width * scale[0] / w, ry = dsize.height * scale[1] / h, ri = round(rx);
+        BOOL whole = ri >= 1.0 && fabs(rx - ri) < 0.004 && fabs(ry - ri) < 0.004;
+        id<MTLRenderPipelineState> pso = (whole && pipelineNearest) ? pipelineNearest : pipeline;
+
         MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
         rp.colorAttachments[0].texture = drawable.texture;
         rp.colorAttachments[0].loadAction = MTLLoadActionClear;
@@ -186,7 +305,7 @@ static uint64_t quick_frame_hash(const uint8_t *px, uint32_t w, uint32_t h, uint
 
         id<MTLCommandBuffer> cb = [queue commandBuffer];
         id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rp];
-        [enc setRenderPipelineState:pipeline];
+        [enc setRenderPipelineState:pso];
         [enc setVertexBytes:scale length:sizeof(scale) atIndex:0];
         [enc setFragmentTexture:texture atIndex:0];
         [enc drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
@@ -196,6 +315,7 @@ static uint64_t quick_frame_hash(const uint8_t *px, uint32_t w, uint32_t h, uint
 
         lastHash = hval;
         lastDrawableSize = dsize;
+        lastPresentNs = now;
         atomic_fetch_add_explicit(&framesPresented, 1, memory_order_relaxed);
         os_unfair_lock_unlock(&lock);
     }
