@@ -2,10 +2,11 @@
 # WindowsiOS: display scaling that follows the screen resolution the iPad app chose.
 #
 # Runs at every sign-in (HKLM Run key, set by winios-setup.ps1). Only when Windows comes up at a
-# screen width it has not seen last time does it change anything: 200% scaling for the iPad's
-# full ("Sharp") resolution, 100% for half ("Smooth") resolution. Scaling changes need a new
-# sign-in, so it then signs out once; automatic sign-in brings the desktop straight back.
-# Scaling you pick yourself in Settings is left alone until the resolution changes again.
+# screen width it has not seen last time does it look at the scaling: 200% for the iPad's full
+# ("Sharp") resolution, 100% for half ("Smooth") resolution. Windows usually picks exactly that by
+# itself; only if the scaling in use differs does this set it, and sign out once so Windows applies
+# it (automatic sign-in brings the desktop straight back). Scaling you pick yourself in Settings is
+# left alone until the resolution changes again.
 
 $ErrorActionPreference = 'SilentlyContinue'
 $vc = Get-CimInstance -ClassName Win32_VideoController |
@@ -20,10 +21,12 @@ if ($last -eq $width) { exit 0 }
 New-ItemProperty -Path $state -Name ScreenWidth -Value $width -PropertyType DWord -Force | Out-Null
 
 $desk = 'HKCU:\Control Panel\Desktop'
-$current = (Get-ItemProperty -Path $desk -Name LogPixels).LogPixels
-if (-not $current) { $current = 96 }
 $wanted = if ($width -ge 1800) { 192 } else { 96 }
-if ($current -eq $wanted) { exit 0 }
+# The DPI Windows applied at this sign-in.
+$applied = (Get-ItemProperty -Path "$desk\WindowMetrics" -Name AppliedDPI).AppliedDPI
+if (-not $applied) { $applied = (Get-ItemProperty -Path $desk -Name LogPixels).LogPixels }
+if (-not $applied) { $applied = 96 }
+if ($applied -eq $wanted) { exit 0 }
 
 if ($wanted -eq 96) {
     Remove-ItemProperty -Path $desk -Name LogPixels
