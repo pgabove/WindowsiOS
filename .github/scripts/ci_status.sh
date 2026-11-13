@@ -31,7 +31,7 @@ push_status() {
   tree="$(GIT_INDEX_FILE="$idx" git write-tree)" || return 0
   commit="$(git -c user.name="ci-status" -c user.email="ci-status@users.noreply.github.com" \
             commit-tree "$tree" -m "CI status (run ${GITHUB_RUN_NUMBER:-?})")" || return 0
-  git push -q -f origin "$commit:refs/heads/ci-status" >/dev/null 2>&1 || echo "[status] push failed"
+  git push -q -f origin "$commit:refs/heads/${CI_STATUS_BRANCH:-ci-status}" >/dev/null 2>&1 || echo "[status] push failed"
 }
 
 apply_control() {

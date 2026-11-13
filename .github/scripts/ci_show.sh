@@ -15,7 +15,7 @@ echo "::endgroup::"
 for png in "$@"; do
   if [ ! -f "$png" ]; then echo "(no screenshot $png)"; continue; fi
   jpg="${png%.png}.jpg"
-  sips -s format jpeg -s formatOptions 50 "$png" --out "$jpg" >/dev/null 2>&1 || cp "$png" "$jpg"
+  sips -s format jpeg -s formatOptions 50 -Z 1600 "$png" --out "$jpg" >/dev/null 2>&1 || cp "$png" "$jpg"
   echo "-----BEGIN SHOT $(basename "$png")-----"
   base64 -b 76 -i "$jpg"
   echo "-----END SHOT $(basename "$png")-----"
