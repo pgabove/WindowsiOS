@@ -11,6 +11,9 @@
 #include <mach/mach_time.h>
 #include <os/lock.h>
 #include <sys/stat.h>
+#include <CommonCrypto/CommonDigest.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 static WinIOSBridge *s_shared_bridge = nil;
 
@@ -35,9 +38,11 @@ static WinIOSBridge *s_shared_bridge = nil;
     CGFloat _screenScale;
     NSInteger _hingeStatus;
     double _hingeAngleDegrees;
+    NSString *_joinName;
 }
 - (void)handleVMExitWithReason:(NSString *)reason;
 - (void)updateUnpackProgress:(double)frac;
+- (void)updateJoinProgress:(double)frac;
 - (void)startDiagTimer;
 - (void)stopDiagTimer;
 @end
@@ -296,11 +301,164 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
     if (!sized) [fm removeItemAtPath:raw error:NULL];
 }
 
+/* iPad addition (large files delivered in parts): Machines/Win11 may hold BASE.001 ... BASE.NNN plus the
+   manifest BASE.parts ("parts=N", "bytes=TOTAL", optional "sha256.NNN=HEX" per part), where BASE is
+   windows11.hvsparse or installer.img. Once every part is there with the right combined size, the parts
+   are joined into BASE and the normal flow (unpack, or on-device install) carries on from it. */
+- (nullable NSDictionary<NSString *, NSString *> *)partsManifestFor:(NSString *)base at:(NSString *)dir {
+    NSString *path = [dir stringByAppendingPathComponent:[base stringByAppendingString:@".parts"]];
+    NSString *text = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:NULL];
+    if (!text) return nil;
+    NSMutableDictionary<NSString *, NSString *> *kv = [NSMutableDictionary dictionary];
+    NSCharacterSet *blank = [NSCharacterSet whitespaceCharacterSet];
+    for (NSString *line in [text componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]]) {
+        NSRange eq = [line rangeOfString:@"="];
+        if (eq.location == NSNotFound) continue;
+        NSString *key = [[line substringToIndex:eq.location] stringByTrimmingCharactersInSet:blank];
+        NSString *value = [[line substringFromIndex:eq.location + 1] stringByTrimmingCharactersInSet:blank];
+        if (key.length) kv[key] = value;
+    }
+    return kv;
+}
+
+/* The part paths in order, or nil unless BASE itself is absent and all of its parts are complete. */
+- (nullable NSArray<NSString *> *)partPathsFor:(NSString *)base
+                                            at:(NSString *)dir
+                                    totalBytes:(unsigned long long *)outBytes {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    if ([fm fileExistsAtPath:[dir stringByAppendingPathComponent:base]]) return nil;
+    NSDictionary<NSString *, NSString *> *kv = [self partsManifestFor:base at:dir];
+    NSInteger count = [kv[@"parts"] integerValue];
+    unsigned long long total = strtoull((kv[@"bytes"] ?: @"0").UTF8String, NULL, 10);
+    if (count < 1 || count > 99 || total == 0) return nil;
+    NSMutableArray<NSString *> *paths = [NSMutableArray arrayWithCapacity:(NSUInteger)count];
+    unsigned long long sum = 0;
+    for (NSInteger i = 1; i <= count; i++) {
+        NSString *name = [NSString stringWithFormat:@"%@.%03ld", base, (long)i];
+        NSString *path = [dir stringByAppendingPathComponent:name];
+        NSDictionary *attrs = [fm attributesOfItemAtPath:path error:NULL];
+        if (!attrs) return nil;
+        sum += [attrs fileSize];
+        [paths addObject:path];
+    }
+    if (sum != total) return nil;
+    if (outBytes) *outBytes = total;
+    return paths;
+}
+
+/* Which file is waiting to be joined from parts, if any. */
+- (nullable NSString *)pendingJoinBaseAt:(NSString *)dir {
+    for (NSString *base in @[@"windows11.hvsparse", @"installer.img"]) {
+        if ([self partPathsFor:base at:dir totalBytes:NULL]) return base;
+    }
+    return nil;
+}
+
+- (void)updateJoinProgress:(double)frac {
+    _unpackProgress = frac;
+    _vmStatus = [NSString stringWithFormat:@"Joining %@ (%.0f%%)...", _joinName ?: @"parts", frac * 100.0];
+    dispatch_async(_diagQueue, ^{
+        [self writeDiagnosticsSnapshot];
+    });
+    [self notifyChanged];
+}
+
+/* Runs on a background queue. Returns nil on success, otherwise a short reason. The parts are only
+   removed after the joined file is complete, so an interrupted join can simply be run again. */
+- (nullable NSString *)joinParts:(NSArray<NSString *> *)parts
+                          ofBase:(NSString *)base
+                      totalBytes:(unsigned long long)total
+                     inDirectory:(NSString *)dir {
+    NSDictionary<NSString *, NSString *> *kv = [self partsManifestFor:base at:dir];
+    NSString *tmp = [dir stringByAppendingPathComponent:[base stringByAppendingString:@".joining"]];
+    NSString *dst = [dir stringByAppendingPathComponent:base];
+    unlink(tmp.fileSystemRepresentation);
+    int outFd = open(tmp.fileSystemRepresentation, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (outFd < 0) return @"cannot create the joined file";
+    const size_t bufSize = 8u << 20;
+    uint8_t *buf = malloc(bufSize);
+    if (!buf) {
+        close(outFd);
+        unlink(tmp.fileSystemRepresentation);
+        return @"out of memory";
+    }
+    unsigned long long done = 0;
+    CFAbsoluteTime lastUpdate = 0;
+    NSString *failure = nil;
+    NSUInteger index = 0;
+    for (NSString *part in parts) {
+        index++;
+        int inFd = open(part.fileSystemRepresentation, O_RDONLY);
+        if (inFd < 0) {
+            failure = [NSString stringWithFormat:@"cannot open part %03lu", (unsigned long)index];
+            break;
+        }
+        CC_SHA256_CTX sha;
+        CC_SHA256_Init(&sha);
+        for (;;) {
+            ssize_t n = read(inFd, buf, bufSize);
+            if (n < 0) {
+                failure = [NSString stringWithFormat:@"read error in part %03lu", (unsigned long)index];
+                break;
+            }
+            if (n == 0) break;
+            ssize_t off = 0;
+            while (off < n) {
+                ssize_t w = write(outFd, buf + off, (size_t)(n - off));
+                if (w <= 0) {
+                    failure = @"write error (is the iPad out of free space?)";
+                    break;
+                }
+                off += w;
+            }
+            if (failure) break;
+            CC_SHA256_Update(&sha, buf, (CC_LONG)n);
+            done += (unsigned long long)n;
+            CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+            if (now - lastUpdate >= 0.2) {
+                lastUpdate = now;
+                double frac = total ? (double)done / (double)total : 0.0;
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self updateJoinProgress:frac];
+                });
+            }
+        }
+        close(inFd);
+        if (failure) break;
+        unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+        CC_SHA256_Final(digest, &sha);
+        NSString *want = [kv[[NSString stringWithFormat:@"sha256.%03lu", (unsigned long)index]] lowercaseString];
+        if (want.length == 2 * CC_SHA256_DIGEST_LENGTH) {
+            NSMutableString *hex = [NSMutableString stringWithCapacity:2 * CC_SHA256_DIGEST_LENGTH];
+            for (int i = 0; i < CC_SHA256_DIGEST_LENGTH; i++) [hex appendFormat:@"%02x", digest[i]];
+            if (![hex isEqualToString:want]) {
+                failure = [NSString stringWithFormat:@"part %03lu is damaged - download that part again", (unsigned long)index];
+                break;
+            }
+        }
+    }
+    free(buf);
+    if (!failure && fsync(outFd) != 0) failure = @"write error";
+    close(outFd);
+    if (!failure && done != total) failure = @"size mismatch";
+    if (!failure && rename(tmp.fileSystemRepresentation, dst.fileSystemRepresentation) != 0) {
+        failure = @"cannot rename the joined file";
+    }
+    if (failure) {
+        unlink(tmp.fileSystemRepresentation);
+        return failure;
+    }
+    for (NSString *part in parts) unlink(part.fileSystemRepresentation);
+    unlink([dir stringByAppendingPathComponent:[base stringByAppendingString:@".parts"]].fileSystemRepresentation);
+    return nil;
+}
+
 - (BOOL)hasProvisionedMachine {
     NSString *dir = [self machineDirectory];
     NSFileManager *fm = [NSFileManager defaultManager];
     if (![fm fileExistsAtPath:[dir stringByAppendingPathComponent:@"code.fd"]]) return NO;
     if (![fm fileExistsAtPath:[dir stringByAppendingPathComponent:@"vars.fd"]]) return NO;
+    if ([self pendingJoinBaseAt:dir]) return YES;
     [self createBlankSystemDiskIfInstallerPresentAt:dir];
     return [self hasRawDiskImageAt:dir] || [self needsSparseUnpack];
 }
@@ -343,6 +501,36 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
     }
 
     NSString *dir = [self machineDirectory];
+
+    /* iPad addition: a file delivered in parts is joined first; this method then runs again and carries
+       on with the joined file (unpack for windows11.hvsparse, on-device install for installer.img). */
+    NSString *joinBase = [self pendingJoinBaseAt:dir];
+    if (joinBase) {
+        unsigned long long joinTotal = 0;
+        NSArray<NSString *> *joinPaths = [self partPathsFor:joinBase at:dir totalBytes:&joinTotal];
+        _unpacking = YES;
+        _unpackProgress = 0.0;
+        _joinName = joinBase;
+        _vmStatus = [NSString stringWithFormat:@"Joining %@ (0%%)...", joinBase];
+        dispatch_async(_diagQueue, ^{ [self writeDiagnosticsSnapshot]; });
+        [self notifyChanged];
+
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            NSString *failure = [self joinParts:joinPaths ofBase:joinBase totalBytes:joinTotal inDirectory:dir];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                self->_unpacking = NO;
+                if (failure) {
+                    self->_vmStatus = [NSString stringWithFormat:@"Error joining %@: %@", joinBase, failure];
+                    dispatch_async(self->_diagQueue, ^{ [self writeDiagnosticsSnapshot]; });
+                    [self notifyChanged];
+                } else {
+                    [self prepareAndStartWithLayer:nil];
+                }
+            });
+        });
+        return;
+    }
+
     if ([self needsSparseUnpack]) {
         _unpacking = YES;
         _unpackProgress = 0.0;
