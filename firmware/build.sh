@@ -41,10 +41,12 @@ git apply --verbose "$HERE/edk2-ramfb-host-resolution.patch"
 export GCC5_AARCH64_PREFIX=aarch64-linux-gnu-
 export PYTHON_COMMAND=python3
 make -s -C BaseTools -j"$(nproc)" >/dev/null
-set +u
+# edksetup.sh is not written for "set -eu".
+set +eu
 # shellcheck disable=SC1091
 source ./edksetup.sh >/dev/null
-set -u
+set -eu
+command -v build
 
 build -q -a AARCH64 -t GCC5 -b DEBUG -p ArmVirtPkg/ArmVirtQemu.dsc -n "$(nproc)" \
   -D NETWORK_HTTP_BOOT_ENABLE=TRUE -D NETWORK_IP6_ENABLE=TRUE -D NETWORK_TLS_ENABLE=TRUE \
