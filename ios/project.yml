@@ -84,6 +84,7 @@ targets:
           - -lffi
           - -lresolv
           - -liconv
+          - -lcompression
     dependencies:
       - sdk: AVFoundation.framework
       - sdk: SafariServices.framework

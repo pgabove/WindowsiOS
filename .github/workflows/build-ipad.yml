@@ -17,8 +17,10 @@ on:
       - devices/**
       - host/**
       - ios/**
+      - tools/**
       - Makefile
       - scripts/build_ios_deps.sh
+      - .github/scripts/test_partstool.sh
       - .github/workflows/build-ipad.yml
 
 permissions:
@@ -101,6 +103,17 @@ jobs:
             test -s "ios/deps/lib/$lib" || { echo "::error::missing ios/deps/lib/$lib"; exit 1; }
           done
           test -f ios/deps/include/slirp/libslirp.h
+
+      # ios/Sources/Native/winios_parts.c puts a Windows image back together from its parts. The same
+      # file builds for macOS, so it is tested here before it goes into the app.
+      - name: Test the code that joins a Windows image from its parts
+        working-directory: WindowsiOS
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          clang -O2 -Wall -Wextra -Iios/Sources/Native tools/partstool.c ios/Sources/Native/winios_parts.c \
+            -lcompression -o build/partstool
+          .github/scripts/test_partstool.sh build/partstool
 
       - name: Build the engine library
         working-directory: WindowsiOS
