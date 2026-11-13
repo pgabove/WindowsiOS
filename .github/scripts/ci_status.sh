@@ -39,6 +39,11 @@ apply_control() {
   git fetch -q --depth 1 origin ci-control >/dev/null 2>&1 || return 0
   local id last
   id="$(git rev-parse -q --verify FETCH_HEAD:commands.txt 2>/dev/null)" || return 0
+  if [ ! -f "$state/control_applied" ]; then
+    # First look in this job: whatever is there was meant for an earlier run.
+    echo "$id" > "$state/control_applied"
+    return 0
+  fi
   last="$(cat "$state/control_applied" 2>/dev/null || true)"
   [ "$id" = "$last" ] && return 0
   echo "$id" > "$state/control_applied"

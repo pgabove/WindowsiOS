@@ -65,7 +65,7 @@ done
 if alive && [ "$tests" = full ]; then
   keep desktop
   say "winr";  sleep 10
-  say 'type cmd /k "ver & ipconfig | findstr /c:adapter /c:IPv4 & curl -s -m 20 http://www.msftconnecttest.com/connecttest.txt & echo. & type C:\Drivers\pnputil.log & type C:\WinIOS\setup-summary.txt"'; sleep 5
+  say 'type cmd /k "ver & type C:\WinIOS\setup-summary.txt & findstr /i /c:netkvm C:\Drivers\pnputil.log & ipconfig | findstr /c:adapter /c:IPv4 & curl -s -m 20 http://www.msftconnecttest.com/connecttest.txt"'; sleep 5
   say "enter"; sleep 50
   keep checks
   status "after the network and setup checks"

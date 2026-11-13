@@ -31,8 +31,9 @@ arm64_netkvm_dir() { # the folder holding the Windows 11 Arm64 netkvm.inf under 
   [ -n "$inf" ] || inf="$(find "$1" -iname netkvm.inf 2>/dev/null | grep -i arm64 | head -n 1)"
   [ -n "$inf" ] && dirname "$inf"
 }
-take() { # DIR LABEL
-  cp "$1"/* "$OUT"/ || return 1
+take() { # DIR LABEL   (only NetKVM's own files: some builds keep every driver in one folder)
+  find "$1" -maxdepth 1 -type f -iname 'netkvm*' -exec cp {} "$OUT"/ \; || return 1
+  ls "$OUT"/*.inf >/dev/null 2>&1 || return 1
   chmod u+w "$OUT"/*
   {
     echo "NetKVM: $2 ($(grep -i -m1 '^DriverVer' "$OUT"/netkvm.inf | tr -d '\r'))"
