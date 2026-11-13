@@ -1,0 +1,28 @@
+run 1 commit 3427b9dac89525912b7ac12d0fd2bcf23d13daff
+phase phase3 sharp 2752x2064 (check boot)  elapsed 14 min  at 2026-11-13 23:21:30 UTC  looking
+
+--- last lines of phase3_sharp.log ---
+winvm: guest RAM outside footprint refused ((os/kern) no access), falling back
+winvm: asking the firmware for a 2752x2064 screen
+winvm: starting headless (3 vCPUs, 4096 MB RAM)...
+UEFI firmware (version edk2-stable202408-winios-ramfb built at 22:44:13 on Nov 13 2026)
+ArmTrngLib could not be correctly initialized.
+Error: Image at 0013FDAF000 start failed: 00000001
+winvm: ramfb configured 2752x2064 stride=11008 fourcc=0x34325258 at PA 0x13b4f0000
+Error: Image at 0013FC98000 start failed: Unsupported
+Error: Image at 0013FC16000 start failed: Not Found
+Error: Image at 0013FB35000 start failed: Aborted
+Tpm2SubmitCommand - Tcg2 - Not Found
+Tpm2GetCapabilityPcrs fail!
+Tpm2SubmitCommand - Tcg2 - Not Found
+winvm: ramfb configured 2752x2064 stride=11008 fourcc=0x34325258 at PA 0x13b4f0000
+[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01HBdsDxe: loading Boot0002 "Windows Boot Manager" from HD(1,GPT,7D3E2C68-95D4-451C-87DA-BD157F801E17,0x800,0x32000)/\EFI\Microsoft\Boot\bootmgfw.efi
+ConvertPages: failed to find range 10000000 - 10340FFF
+BdsDxe: starting Boot0002 "Windows Boot Manager" from HD(1,GPT,7D3E2C68-95D4-451C-87DA-BD157F801E17,0x800,0x32000)/\EFI\Microsoft\Boot\bootmgfw.efi
+ConvertPages: failed to find range 102000 - 102FFF
+winvm: cmd: winr
+winvm: cmd: wait 8000
+winvm: cmd: type cmd /k "ipconfig | findstr /c:adapter /c:IPv4 & curl -s -m 20 http://www.msftconnecttest.com/connecttest.txt & echo. & findstr /i /c:netkvm C:\Drivers\pnputil.log"
+winvm: cmd: wait 2000
+winvm: cmd: enter
+winvm: cmd: wait 40000
