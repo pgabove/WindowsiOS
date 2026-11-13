@@ -65,6 +65,8 @@ Step 'machine policies' {
     Set-Reg "$P\Edge" 'BackgroundModeEnabled' 0
     Set-Reg "$P\Edge" 'ShowRecommendationsEnabled' 0
     Set-Reg 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' 'EnableFirstLogonAnimation' 0
+    # After a sign-out (the display-scaling switch signs out once), sign straight back in.
+    Set-Reg 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' 'ForceAutoLogon' '1' 'String'
 }
 
 # ---------------------------------------------------------------- services
@@ -97,7 +99,7 @@ Step 'remove preinstalled extras' {
         'Microsoft.GetHelp', 'Microsoft.WindowsFeedbackHub', 'Microsoft.WindowsMaps', 'Microsoft.People',
         'Microsoft.PowerAutomateDesktop', 'Microsoft.Todos', 'Microsoft.YourPhone', 'MicrosoftWindows.CrossDevice',
         'MicrosoftCorporationII.MicrosoftFamily', 'Microsoft.Windows.DevHome', 'MicrosoftWindows.Client.WebExperience',
-        'Microsoft.StartExperiencesApp', 'Microsoft.549981C3F5F10', 'Microsoft.WindowsCommunicationsApps'
+        'Microsoft.549981C3F5F10', 'Microsoft.WindowsCommunicationsApps'
     )
     $removed = 0
     $packages = Get-AppxProvisionedPackage -Online
