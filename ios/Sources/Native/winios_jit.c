@@ -93,6 +93,25 @@ static void prealloc_ledger_exempt_ram(void) {
     size_t len = sizeof phys_mem;
     sysctlbyname("hw.memsize", &phys_mem, &len, NULL, 0);
     uint64_t phys_mb = phys_mem >> 20;
+    /* iPad addition: 16 GB-class hosts (M-series iPad Pro) try 8 GB, then 6 GB, before the stock tiers below.
+     * A tier is only tried when this process's own headroom would still cover it if the ledger exemption
+     * were not honoured (os_proc_available_memory() == 0 means the kernel reports no limit). */
+    if (phys_mb >= 14336) {
+        static const uint64_t big_candidates_mb[] = {8192, 6144};
+        uint64_t avail_mb = (uint64_t)winios_available_memory_bytes() >> 20;
+        for (size_t i = 0; i < sizeof(big_candidates_mb) / sizeof(big_candidates_mb[0]); i++) {
+            uint64_t mb = big_candidates_mb[i];
+            if (avail_mb != 0 && avail_mb < mb + 2048) continue;
+            uint8_t *p = hv_alloc_no_footprint(mb << 20);
+            if (p) {
+                g_guest_ram = p;
+                g_guest_ram_bytes = mb << 20;
+                WINIOS_LOG("pre-allocated %llu MiB ledger-exempt Guest RAM at %p (16 GB-class host)",
+                           (unsigned long long)mb, (void *)p);
+                return;
+            }
+        }
+    }
     /* Size Guest RAM to fit comfortably within iOS 36-bit user VA ceiling alongside TXM JIT RX/RW + JIT tables */
     static const uint64_t candidates_mb[] = {4608, 4096, 3584, 3072, 2560, 2048};
     for (size_t i = 0; i < sizeof(candidates_mb) / sizeof(candidates_mb[0]); i++) {

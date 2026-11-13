@@ -282,11 +282,26 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
     return [[NSFileManager defaultManager] fileExistsAtPath:sparse];
 }
 
+/* iPad addition (on-device install): when Machines/Win11 holds installer.img but no system disk yet,
+   create the blank 32 GB sparse NVMe image that the installer's startnet.cmd looks for ("32 GB"). */
+- (void)createBlankSystemDiskIfInstallerPresentAt:(NSString *)dir {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *raw = [dir stringByAppendingPathComponent:@"windows11.img"];
+    if (![fm fileExistsAtPath:[dir stringByAppendingPathComponent:@"installer.img"]]) return;
+    if ([fm fileExistsAtPath:raw] || [self needsSparseUnpack]) return;
+    if (![fm createFileAtPath:raw contents:nil attributes:nil]) return;
+    NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:raw];
+    BOOL sized = handle && [handle truncateAtOffset:(32ull << 30) error:NULL];
+    [handle closeAndReturnError:NULL];
+    if (!sized) [fm removeItemAtPath:raw error:NULL];
+}
+
 - (BOOL)hasProvisionedMachine {
     NSString *dir = [self machineDirectory];
     NSFileManager *fm = [NSFileManager defaultManager];
     if (![fm fileExistsAtPath:[dir stringByAppendingPathComponent:@"code.fd"]]) return NO;
     if (![fm fileExistsAtPath:[dir stringByAppendingPathComponent:@"vars.fd"]]) return NO;
+    [self createBlankSystemDiskIfInstallerPresentAt:dir];
     return [self hasRawDiskImageAt:dir] || [self needsSparseUnpack];
 }
 
@@ -404,6 +419,11 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
     NSString *varsPath = [dir stringByAppendingPathComponent:@"vars.fd"];
     NSString *diskPath = [dir stringByAppendingPathComponent:@"windows11.img"];
 
+    /* iPad addition (on-device install): installer.img present = provisioning mode. It is attached as the
+       read-only second NVMe disk and the guest stays offline, mirroring the Mac pipeline's --disk1 / --no-net. */
+    NSString *installerPath = [dir stringByAppendingPathComponent:@"installer.img"];
+    BOOL installerAttached = [[NSFileManager defaultManager] fileExistsAtPath:installerPath];
+
     _configuredRamMB = ramMB;
     _configuredCPUs = 4;
 
@@ -411,7 +431,7 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
         .code_fd = codePath.fileSystemRepresentation,
         .vars_fd = varsPath.fileSystemRepresentation,
         .disk0 = diskPath.fileSystemRepresentation,
-        .disk1 = NULL,
+        .disk1 = installerAttached ? installerPath.fileSystemRepresentation : NULL,
         .share_dir = sharedDir.fileSystemRepresentation,
         .share_sock = shareSock.fileSystemRepresentation,
         .ncpus = _configuredCPUs,
@@ -420,7 +440,7 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
         .jit_rx = jit.rx_addr,
         .jit_rw = jit.rw_addr,
         .prealloc_ram = preallocRam,
-        .no_net = 0,
+        .no_net = installerAttached ? 1 : 0,
         .enable_sound = 1,
         .log = 0,
         .stats_interval = 0,
@@ -446,6 +466,7 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
     _lastWfiTicks = 0;
     _lastWfiIdlePct = 0.0;
     _vmStatus = [NSString stringWithFormat:@"Running Windows 11 ARM64 (%d vCPUs, %llu MB RAM)", _configuredCPUs, _configuredRamMB];
+    if (installerAttached) _vmStatus = [_vmStatus stringByAppendingString:@" - installer.img attached, network off"];
     [[UIApplication sharedApplication] setIdleTimerDisabled:YES];
 
     hv_winvm_start(1, vm_exit_trampoline);
