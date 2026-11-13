@@ -54,6 +54,8 @@ EDITION = os.environ.get("WINIOS_EDITION", "Windows 11 Pro")
 WIN_USER = os.environ.get("WINIOS_USER", "Ammaar")
 WIN_COMPUTER = os.environ.get("WINIOS_COMPUTER", "IPHONE-DUO")
 NETKVM_DIR = WORK / "drivers" / "NetKVM"
+# iPad addition: scripts that tune Windows for the engine (run during setup, see unattend below).
+WINIOS_SCRIPTS_DIR = ROOT / "scripts" / "windows"
 ISO_MNT = WORK / "_iso_mnt"
 IPAD_STAGE = WORK / "ipad_stage"
 WIMLIB = shutil.which("wimlib-imagex") or "/opt/homebrew/bin/wimlib-imagex"
@@ -204,6 +206,11 @@ if exist X:\Drivers\NetKVM\*.inf (
   xcopy X:\Drivers\NetKVM W:\Drivers\NetKVM\ /e /i /y /q
 )
 
+if exist X:\WinIOS\*.ps1 (
+  echo [WIN11-PROVISION] Copying the WindowsiOS tuning scripts to W:\WinIOS...
+  xcopy X:\WinIOS W:\WinIOS\ /e /i /y /q
+)
+
 echo [WIN11-PROVISION] Injecting unattend.xml and offline registry settings...
 mkdir W:\Windows\Panther
 copy /y X:\Windows\System32\unattend_panther.xml W:\Windows\Panther\unattend.xml
@@ -324,6 +331,16 @@ PANTHER_UNATTEND_XML = PANTHER_UNATTEND_XML.replace(
     "      </RunSynchronous>\n    </component>\n  </settings>\n\n  <settings pass=\"oobeSystem\">",
     1,
 )
+# iPad addition: tune Windows for the engine during setup (as SYSTEM): scripts/windows/winios-setup.ps1.
+PANTHER_UNATTEND_XML = PANTHER_UNATTEND_XML.replace(
+    "      </RunSynchronous>\n    </component>\n  </settings>\n\n  <settings pass=\"oobeSystem\">",
+    "        <RunSynchronousCommand wcm:action=\"add\">\n"
+    "          <Order>4</Order>\n"
+    "          <Path>cmd /c \"if exist C:\\WinIOS\\winios-setup.ps1 powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\\WinIOS\\winios-setup.ps1 &amp; exit /b 0\"</Path>\n"
+    "        </RunSynchronousCommand>\n"
+    "      </RunSynchronous>\n    </component>\n  </settings>\n\n  <settings pass=\"oobeSystem\">",
+    1,
+)
 # iPad / 26H2 addition: startnet.cmd finds the system disk by its size, as diskpart prints it.
 if DISK_GB != 32:
     STARTNET_CMD = STARTNET_CMD.replace("32 GB", f"{DISK_GB} GB")
@@ -353,6 +370,9 @@ def make_custom_boot_wim(dest_boot_wim: Path):
         cmds += f"add '{NETKVM_DIR}' '/Drivers/NetKVM'\n".encode("utf-8")
     else:
         print(f"NOTE: no *.inf in {NETKVM_DIR}; Windows will have no Ethernet driver", flush=True)
+    if WINIOS_SCRIPTS_DIR.is_dir():
+        print(f"Adding Windows tuning scripts from {WINIOS_SCRIPTS_DIR} to WinPE (X:\\WinIOS)", flush=True)
+        cmds += f"add '{WINIOS_SCRIPTS_DIR}' '/WinIOS'\n".encode("utf-8")
     run([WIMLIB, "update", dest_boot_wim, "1"], input=cmds)
     snet.unlink(missing_ok=True)
     unat.unlink(missing_ok=True)
