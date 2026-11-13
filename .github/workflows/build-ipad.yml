@@ -4,7 +4,7 @@
 # The IPA comes out ad-hoc signed with the app's own entitlements file (get-task-allow), the same
 # way Henge packages its IPA: your sideloader re-signs it with your certificate on install.
 #
-# Runs on every push to the ipad-26h2 branch, and by hand from the Actions tab.
+# Runs when the app or the engine changes on the ipad-26h2 branch, and by hand from the Actions tab.
 
 name: Build iPad IPA
 
@@ -12,6 +12,14 @@ on:
   workflow_dispatch: {}
   push:
     branches: [ ipad-26h2 ]
+    paths:
+      - core/**
+      - devices/**
+      - host/**
+      - ios/**
+      - Makefile
+      - scripts/build_ios_deps.sh
+      - .github/workflows/build-ipad.yml
 
 permissions:
   contents: read
