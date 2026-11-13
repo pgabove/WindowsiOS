@@ -41,7 +41,8 @@ git apply --verbose "$HERE/edk2-ramfb-host-resolution.patch"
 export GCC5_AARCH64_PREFIX=aarch64-linux-gnu-
 export PYTHON_COMMAND=python3
 make -s -C BaseTools -j"$(nproc)" >/dev/null
-# edksetup.sh is not written for "set -eu".
+# edksetup.sh is not written for "set -eu", and it parses the caller's arguments: clear them.
+set --
 set +eu
 # shellcheck disable=SC1091
 source ./edksetup.sh >/dev/null
