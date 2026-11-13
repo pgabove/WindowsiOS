@@ -1,11 +1,11 @@
 # Installs Windows 11 26H2 Arm64 under the engine's macOS build on a GitHub-hosted Apple Silicon
 # runner, the way scripts/provision_windows_arm64.py does it on a Mac, then:
 #
-#   1. packs the finished disk and uploads it, in parts, to a DRAFT release. A draft release is
-#      shown only to people with write access to this repository. It must stay a draft: it holds
-#      Microsoft's Windows files, which are not ours to hand out.
-#   2. joins the parts again, unpacks them and boots the result once, as a check of the very
-#      files that were uploaded.
+#   1. packs and compresses the finished disk and uploads it, in parts, to a DRAFT release. A
+#      draft release is shown only to people with write access to this repository. It must stay
+#      a draft: it holds Microsoft's Windows files, which are not ours to hand out.
+#   2. joins the parts again with the code the iPad app uses, unpacks them and boots the result
+#      once, as a check of the very files that were uploaded.
 #
 # The Windows media comes straight from Microsoft's Media Creation Tool catalog.
 #
@@ -106,7 +106,10 @@ jobs:
           set -euo pipefail
           make -j"$(sysctl -n hw.ncpu)" all
           make test-core
-          ls -l build/winvm build/hvsparse
+          clang -O2 -Wall -Wextra -Iios/Sources/Native tools/partstool.c ios/Sources/Native/winios_parts.c \
+            -lcompression -o build/partstool
+          .github/scripts/test_partstool.sh build/partstool
+          ls -l build/winvm build/hvsparse build/partstool
 
       - name: Fetch the Windows 11 26H2 Arm64 ESD from Microsoft
         run: |
@@ -187,8 +190,9 @@ jobs:
           ls -l work/windows11.hvsparse
           rm -f work/windows11.img
           mkdir -p work/release
-          python3 .github/scripts/split_parts.py work/windows11.hvsparse 1900 work/release
+          build/partstool split work/windows11.hvsparse 1900 work/release lzfse
           rm -f work/windows11.hvsparse
+          cat work/release/windows11.hvsparse.parts
           cp work/code.fd work/release/code.fd
           cp work/vars_clean.fd work/release/vars.fd
           ( cd work/release && shasum -a 256 * > ../SHA256SUMS.txt )
@@ -236,14 +240,10 @@ jobs:
         timeout-minutes: 50
         run: |
           set +e
-          cat work/release/windows11.hvsparse.[0-9][0-9][0-9] > work/joined.hvsparse
-          want="$(grep '^bytes=' work/release/windows11.hvsparse.parts | cut -d= -f2)"
-          have="$(stat -f %z work/joined.hvsparse)"
-          echo "joined $have bytes, manifest says $want"
-          [ "$want" = "$have" ] || { echo "::error::joined size does not match the manifest"; exit 1; }
-          rm -f work/release/windows11.hvsparse.[0-9][0-9][0-9]
-          build/hvsparse unpack work/joined.hvsparse work/check.img || { echo "::error::unpack failed"; exit 1; }
-          rm -f work/joined.hvsparse
+          # The same join code as the app: checks every part's SHA-256, decompresses, removes the parts.
+          build/partstool join work/release windows11.hvsparse || { echo "::error::joining the parts failed"; exit 1; }
+          build/hvsparse unpack work/release/windows11.hvsparse work/check.img || { echo "::error::unpack failed"; exit 1; }
+          rm -f work/release/windows11.hvsparse
           .github/scripts/ci_phase3.sh "$PWD/work/check.img" "$PWD/work/release/code.fd" "$PWD/work/release/vars.fd" 14
 
       - name: Check boot result

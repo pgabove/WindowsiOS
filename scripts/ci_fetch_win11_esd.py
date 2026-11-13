@@ -22,6 +22,7 @@ import base64
 import hashlib
 import json
 import shutil
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -33,6 +34,46 @@ CATALOG_URL = "https://go.microsoft.com/fwlink/?LinkId=2156292"
 FE3_SEARCH = "https://fe3.delivery.mp.microsoft.com/UpdateMetadataService/updates/search/v1/bydeviceinfo"
 FE3_QUERY = {"Products": "PN=Windows.Products.Cab.amd64&V=0.0.0.0",
              "DeviceAttributes": "DUScan=1;OSVersion=10.0.26100.1"}
+# Microsoft's update servers use certificates from Microsoft's own root, which Windows trusts and
+# public CA bundles do not. The root and the issuing CA are published on www.microsoft.com, whose
+# own certificate comes from a public CA, so they can be fetched and then trusted for this lookup.
+MS_CA_URLS = (
+    ("https://www.microsoft.com/pkiops/certs/MicRooCerAut2011_2011_03_22.crt",
+     "https://www.microsoft.com/pki/certs/MicRooCerAut2011_2011_03_22.crt"),
+    ("https://www.microsoft.com/pkiops/certs/Microsoft%20Update%20Secure%20Server%20CA%202.1.crt",),
+)
+
+
+def microsoft_ca_bundle(tmp: Path) -> Path:
+    bundle = tmp / "microsoft_ca.pem"
+    count = 0
+    with open(bundle, "w", encoding="ascii") as out:
+        for urls in MS_CA_URLS:
+            for url in urls:
+                raw = tmp / "ca.crt"
+                if subprocess.run(["curl", "-fsSL", "--retry", "2", "-o", str(raw), url]).returncode != 0:
+                    continue
+                data = raw.read_bytes()
+                pem = data.decode("ascii") if b"BEGIN CERTIFICATE" in data else ssl.DER_cert_to_PEM_cert(data)
+                out.write(pem if pem.endswith("\n") else pem + "\n")
+                print(f"Microsoft CA certificate: {url.rsplit('/', 1)[-1]} "
+                      f"(sha256 {hashlib.sha256(ssl.PEM_cert_to_DER_cert(pem)).hexdigest()})", flush=True)
+                count += 1
+                break
+    if not count:
+        raise RuntimeError("could not fetch Microsoft's CA certificates from www.microsoft.com")
+    return bundle
+
+
+def curl_microsoft(args, tmp: Path, **kwargs):
+    """curl with the system's trusted CAs first, then with Microsoft's own CA. Never unverified."""
+    first = subprocess.run(["curl", *args], **kwargs)
+    if first.returncode not in (35, 51, 58, 59, 60, 77, 83, 90, 91):  # anything but a certificate problem
+        return first
+    bundle = tmp / "microsoft_ca.pem"
+    if not bundle.exists():
+        microsoft_ca_bundle(tmp)
+    return subprocess.run(["curl", "--cacert", str(bundle), *args], **kwargs)
 
 
 def extract_catalog(cab: Path, tmp: Path) -> Path:
@@ -74,10 +115,13 @@ def digest_matches(path: Path, digest: str):
 
 def fetch_catalog_fe3(tmp: Path) -> Path:
     """The current catalog, located through Microsoft's update metadata service."""
-    reply = subprocess.run(
-        ["curl", "-sS", "--retry", "3", "-X", "POST", "-H", "Content-Type: application/json",
+    done = curl_microsoft(
+        ["-sS", "--retry", "3", "-X", "POST", "-H", "Content-Type: application/json",
          "-H", "Accept: application/json", "--data", json.dumps(FE3_QUERY), FE3_SEARCH],
-        check=True, capture_output=True, text=True).stdout
+        tmp, capture_output=True, text=True)
+    if done.returncode != 0:
+        raise RuntimeError(f"metadata service request failed (curl {done.returncode}): {done.stderr.strip()[:300]}")
+    reply = done.stdout
     try:
         data = json.loads(reply)
     except ValueError:
@@ -99,7 +143,9 @@ def fetch_catalog_fe3(tmp: Path) -> Path:
     if not host.endswith(".microsoft.com"):
         raise RuntimeError(f"unexpected catalog host {host}")
     cab = tmp / "products_fe3.cab"
-    subprocess.run(["curl", "-fsSL", "--retry", "3", "-o", str(cab), f["Url"]], check=True)
+    got = curl_microsoft(["-fsSL", "--retry", "3", "-o", str(cab), f["Url"]], tmp, capture_output=True, text=True)
+    if got.returncode != 0:
+        raise RuntimeError(f"products.cab download failed (curl {got.returncode}): {got.stderr.strip()[:300]}")
     ok = digest_matches(cab, str(f.get("Digest") or ""))
     if ok is False:
         raise RuntimeError("products.cab does not match the digest the metadata service gave")
