@@ -24,6 +24,10 @@ typedef struct HvWinVmConfig {
     int enable_sound;
     int log;
     int stats_interval;
+    /* iPad addition: screen resolution to ask the UEFI firmware for (0 = firmware default 800x600).
+       Needs firmware with firmware/edk2-ramfb-host-resolution.patch; stock firmware ignores it. */
+    uint32_t fb_width;
+    uint32_t fb_height;
 } HvWinVmConfig;
 
 int hv_winvm_create(const HvWinVmConfig *cfg, char *err, size_t errlen);

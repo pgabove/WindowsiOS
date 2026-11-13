@@ -190,6 +190,15 @@ int hv_winvm_create(const HvWinVmConfig *c, char *err, size_t errlen) {
     }
     hv_winvirt_reset_cpu(&board);
 
+    /* iPad addition: ask the firmware for an exact screen resolution (two little-endian u32: width, height). */
+    if (c->fb_width && c->fb_height && board.fw_cfg) {
+        uint32_t res[2] = {c->fb_width, c->fb_height};
+        if (hv_fw_cfg_add_file(board.fw_cfg, "opt/org.winios/ramfb-res", res, sizeof res) < 0)
+            fprintf(stderr, "winvm: no room for the screen resolution in fw_cfg\n");
+        else
+            fprintf(stderr, "winvm: asking the firmware for a %ux%u screen\n", c->fb_width, c->fb_height);
+    }
+
     share_on = 0;
     if (c->share_dir && *c->share_dir && c->share_sock && *c->share_sock) {
         if (hv_share_start(c->share_dir, c->share_sock, NULL) == 0) {

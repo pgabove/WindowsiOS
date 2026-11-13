@@ -1,0 +1,55 @@
+diff --git a/OvmfPkg/QemuRamfbDxe/QemuRamfb.c b/OvmfPkg/QemuRamfbDxe/QemuRamfb.c
+index 5a1044f..0a5ceb8 100644
+--- a/OvmfPkg/QemuRamfbDxe/QemuRamfb.c
++++ b/OvmfPkg/QemuRamfbDxe/QemuRamfb.c
+@@ -251,6 +251,10 @@ InitializeQemuRamfb (
+   UINTN                     FbSize, MaxFbSize, Pages;
+   UINTN                     FwCfgSize;
+   UINTN                     Index;
++  FIRMWARE_CONFIG_ITEM      HostResItem;
++  UINTN                     HostResSize;
++  UINT32                    HostRes[2];
++  UINT32                    StartMode;
+ 
+   if (!QemuFwCfgIsAvailable ()) {
+     DEBUG ((DEBUG_INFO, "Ramfb: no FwCfg\n"));
+@@ -272,6 +276,27 @@ InitializeQemuRamfb (
+     return EFI_PROTOCOL_ERROR;
+   }
+ 
++  //
++  // WindowsiOS addition: the host may ask for one exact resolution through the fw_cfg file
++  // "opt/org.winios/ramfb-res" (two little-endian UINT32 values: width, height). That
++  // resolution then becomes the only mode, so the console and the OS loader keep it.
++  //
++  StartMode = 1;
++  Status    = QemuFwCfgFindFile ("opt/org.winios/ramfb-res", &HostResItem, &HostResSize);
++  if (!EFI_ERROR (Status) && (HostResSize == sizeof (HostRes))) {
++    QemuFwCfgSelectItem (HostResItem);
++    QemuFwCfgReadBytes (sizeof (HostRes), HostRes);
++    if ((HostRes[0] >= 640) && (HostRes[0] <= 4096) && ((HostRes[0] % 4) == 0) &&
++        (HostRes[1] >= 480) && (HostRes[1] <= 4096))
++    {
++      mQemuRamfbModeInfo[0].HorizontalResolution = HostRes[0];
++      mQemuRamfbModeInfo[0].VerticalResolution   = HostRes[1];
++      mQemuRamfbMode.MaxMode                     = 1;
++      StartMode                                  = 0;
++      DEBUG ((DEBUG_INFO, "Ramfb: host resolution %ux%u\n", HostRes[0], HostRes[1]));
++    }
++  }
++
+   MaxFbSize = 0;
+   for (Index = 0; Index < ARRAY_SIZE (mQemuRamfbModeInfo); Index++) {
+     mQemuRamfbModeInfo[Index].PixelsPerScanLine =
+@@ -314,9 +339,9 @@ InitializeQemuRamfb (
+   mQemuRamfbMode.FrameBufferBase = FbBase;
+ 
+   //
+-  // 800 x 600
++  // 800 x 600, or the resolution the host asked for
+   //
+-  QemuRamfbGraphicsOutputSetMode (&mQemuRamfbGraphicsOutput, 1);
++  QemuRamfbGraphicsOutputSetMode (&mQemuRamfbGraphicsOutput, StartMode);
+ 
+   //
+   // ramfb vendor devpath

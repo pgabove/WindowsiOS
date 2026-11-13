@@ -486,6 +486,7 @@ static void usage(const char *prog) {
             "  --cpus <N>                Number of vCPUs (default: 4)\n"
             "  --ram <MB>                Guest RAM in MB (default: 4096)\n"
             "  --share <dir>             Host folder shared at http://10.0.2.4/\n"
+            "  --fb <W>x<H>              Screen resolution to ask the firmware for\n"
             "  --headless                Run without Cocoa GUI window\n"
             "  --screenshot <png>        Save guest framebuffer PNG\n"
             "  --screenshot-after <sec>  Save screenshot after N seconds\n"
@@ -524,6 +525,12 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--cpus"))         cfg.ncpus = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--ram"))          cfg.ram_mb = strtoull(argv[++i], NULL, 0);
         else if (!strcmp(argv[i], "--share"))        cfg.share_dir = argv[++i];
+        else if (!strcmp(argv[i], "--fb")) {
+            unsigned fw = 0, fh = 0;
+            if (sscanf(argv[++i], "%ux%u", &fw, &fh) != 2) usage(argv[0]);
+            cfg.fb_width = fw;
+            cfg.fb_height = fh;
+        }
         else if (!strcmp(argv[i], "--screenshot"))   targs.screenshot_path = argv[++i];
         else if (!strcmp(argv[i], "--screenshot-after")) targs.screenshot_after = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--timeout"))      targs.timeout_sec = atoi(argv[++i]);

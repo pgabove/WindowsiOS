@@ -1,0 +1,34 @@
+# Builds the engine's AArch64 UEFI firmware (code.fd): QEMU's EDK2 build plus the patch that lets
+# the app choose Windows' screen resolution. See firmware/build.sh.
+
+name: Build UEFI firmware
+
+on:
+  workflow_dispatch: {}
+  workflow_call: {}
+  push:
+    branches: [ ipad-26h2 ]
+    paths:
+      - firmware/**
+      - .github/workflows/firmware.yml
+
+jobs:
+  firmware:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Build
+        run: firmware/build.sh "$RUNNER_TEMP/fw"
+
+      - name: Upload code.fd
+        uses: actions/upload-artifact@v7
+        with:
+          name: winios-uefi-firmware
+          path: |
+            ${{ runner.temp }}/fw/code.fd
+            ${{ runner.temp }}/fw/code.fd.sha256
+          if-no-files-found: error
+          retention-days: 30
