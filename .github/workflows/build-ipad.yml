@@ -1,0 +1,178 @@
+# Builds the WindowsiOS app for iPad on a GitHub-hosted Apple Silicon runner. No Mac needed.
+# Free on a PUBLIC repo: `xcode-27` is a standard hosted runner.
+#
+# The IPA comes out ad-hoc signed with the app's own entitlements file (get-task-allow), the same
+# way Henge packages its IPA: your sideloader re-signs it with your certificate on install.
+#
+# Runs on every push to the ipad-26h2 branch, and by hand from the Actions tab.
+
+name: Build iPad IPA
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [ ipad-26h2 ]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-ipad-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      # scripts/build_ios_deps.sh takes its libslirp iOS patch from a Husk checkout.
+      HUSK_REF: ${{ github.workspace }}/Husk
+
+    steps:
+      - name: Check out WindowsiOS (this branch)
+        uses: actions/checkout@v7
+        with:
+          path: WindowsiOS
+
+      - name: Check out Husk (libslirp iOS patch)
+        uses: actions/checkout@v7
+        with:
+          repository: Leviidev/Husk
+          ref: 29abb512d81bf8cc08babcbe7f7007cb557208ef
+          path: Husk
+
+      # The app references UIHingeInteraction behind an iOS 27.1 availability check,
+      # so the SDK has to be 27.1 or newer even for an iPad build.
+      - name: Select Xcode (iOS 27.1 SDK or newer)
+        run: |
+          set -euo pipefail
+          if [ -d /Applications/Xcode_27.1.app ]; then
+            sudo xcode-select -s /Applications/Xcode_27.1.app
+          fi
+          xcodebuild -version
+          sdk="$(xcrun --sdk iphoneos --show-sdk-version)"
+          echo "iOS SDK: $sdk"
+          lowest="$(printf '%s\n' 27.1 "$sdk" | sort -V | head -n 1)"
+          if [ "$lowest" != "27.1" ]; then
+            echo "::error::iOS SDK $sdk is older than 27.1"
+            exit 1
+          fi
+
+      - name: Install build tools
+        run: |
+          set -euxo pipefail
+          for tool in xcodegen meson ninja pkg-config; do
+            command -v "$tool" >/dev/null 2>&1 || brew install "$tool"
+          done
+          # scripts/build_ios_deps.sh points meson at this interpreter, and glib's build
+          # needs the `packaging` module in it.
+          PY=/opt/homebrew/bin/python3
+          [ -x "$PY" ] || brew install python
+          "$PY" -c 'import packaging' 2>/dev/null \
+            || brew install python-packaging \
+            || "$PY" -m pip install --break-system-packages packaging
+          "$PY" -c 'import sys, packaging; print("python", sys.version.split()[0], "packaging", packaging.__version__)'
+
+      - name: Cache the iOS dependency build
+        uses: actions/cache@v4
+        with:
+          path: WindowsiOS/work/ios_deps_build
+          key: winios-deps-${{ runner.os }}-${{ hashFiles('WindowsiOS/scripts/build_ios_deps.sh') }}
+
+      - name: Build iOS dependencies (libffi, glib, libslirp)
+        working-directory: WindowsiOS
+        run: |
+          set -euo pipefail
+          test -f "$HUSK_REF/patches/libslirp-v4.9.1.patch"
+          ./scripts/build_ios_deps.sh
+          for lib in libslirp.a libglib-2.0.a libintl.a libpcre2-8.a libffi.a; do
+            test -s "ios/deps/lib/$lib" || { echo "::error::missing ios/deps/lib/$lib"; exit 1; }
+          done
+          test -f ios/deps/include/slirp/libslirp.h
+
+      - name: Build the engine library
+        working-directory: WindowsiOS
+        run: |
+          set -euo pipefail
+          make ios-lib
+          ls -lh build/ios/libwinvm.a
+
+      - name: Build the app (unsigned)
+        working-directory: WindowsiOS
+        run: |
+          set -euo pipefail
+          xcodegen generate --spec ios/project.yml
+          mkdir -p build
+          if ! xcodebuild -project ios/WindowsiOS.xcodeproj -scheme WindowsiOS -configuration Release \
+                -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build/DerivedData \
+                CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build \
+                > build/xcodebuild.log 2>&1; then
+            echo "::error::xcodebuild failed (details in the 'Print failure details' step)"
+            exit 1
+          fi
+          grep -E "BUILD (SUCCEEDED|FAILED)" build/xcodebuild.log
+
+      - name: Package the IPA (ad-hoc signed with the app's entitlements)
+        working-directory: WindowsiOS
+        run: |
+          set -euo pipefail
+          APP=build/DerivedData/Build/Products/Release-iphoneos/WindowsiOS.app
+          test -x "$APP/WindowsiOS"
+          test -f "$APP/henge-jit.js"
+          STAGE="$(mktemp -d)"
+          mkdir -p "$STAGE/Payload" dist
+          cp -R "$APP" "$STAGE/Payload/"
+          SAPP="$STAGE/Payload/WindowsiOS.app"
+          plutil -insert WinIOSBuildCommit -string "${GITHUB_SHA:0:12}" "$SAPP/Info.plist"
+          codesign --force --sign - --timestamp=none --entitlements ios/WindowsiOS.entitlements "$SAPP"
+          codesign -d --entitlements - "$SAPP" > "$STAGE/entitlements.txt" 2>&1 || true
+          cat "$STAGE/entitlements.txt"
+          grep -q "get-task-allow" "$STAGE/entitlements.txt" || { echo "::error::get-task-allow did not embed"; exit 1; }
+          lipo -info "$SAPP/WindowsiOS"
+          plutil -p "$SAPP/Info.plist" | grep -E "CFBundleIdentifier|CFBundleDisplayName|UIDeviceFamily|MinimumOSVersion|DTSDKName|WinIOSBuildCommit" || true
+          ( cd "$STAGE" && zip -qry package.zip Payload )
+          mv "$STAGE/package.zip" dist/WindowsiOS-iPad.ipa
+          ls -lh dist/WindowsiOS-iPad.ipa
+          shasum -a 256 dist/WindowsiOS-iPad.ipa
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v7
+        with:
+          name: WindowsiOS-iPad-ipa
+          path: WindowsiOS/dist/WindowsiOS-iPad.ipa
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Print failure details
+        if: failure()
+        working-directory: WindowsiOS
+        run: |
+          for f in work/ios_deps_build/*.log; do
+            [ -f "$f" ] || continue
+            echo "::group::tail $f"
+            tail -n 120 "$f" || true
+            echo "::endgroup::"
+          done
+          if [ -f build/xcodebuild.log ]; then
+            echo "::group::xcodebuild errors"
+            grep -n -E "error:|Undefined symbols|ld: |fatal" build/xcodebuild.log | head -n 200 || true
+            echo "::endgroup::"
+            echo "::group::xcodebuild tail"
+            tail -n 150 build/xcodebuild.log || true
+            echo "::endgroup::"
+          fi
+
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: build-logs
+          path: |
+            WindowsiOS/build/xcodebuild.log
+            WindowsiOS/work/ios_deps_build/*.log
+          if-no-files-found: ignore
+          retention-days: 7
