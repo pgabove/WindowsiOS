@@ -1,0 +1,41 @@
+run 6 attempt 1 commit 238de027cf26
+phase phase2  elapsed 22 min  at 2026-11-14 00:10:56 UTC
+windows11.img on disk: 17G
+winvm (rss KB, cpu %, elapsed): 
+host: total = 1024.00M  used = 250.19M  free = 773.81M  (encrypted) | free disk /dev/disk2s1s1       179   12        88    13%  484019 925636200    0%   /
+RESULT phase2: VM stop reason 'halt', 1 guest reboot(s), 1361 s OK
+
+--- last lines of prov_phase2_oobe.log ---
+winvm: guest RAM outside footprint refused ((os/kern) no access), falling back
+winvm: starting headless (3 vCPUs, 4096 MB RAM)...
+UEFI firmware (version edk2-stable202408-prebuilt.qemu.org built at 16:28:50 on Sep 12 2024)
+ArmTrngLib could not be correctly initialized.
+Error: Image at 0013FDB6000 start failed: 00000001
+winvm: ramfb configured 800x600 stride=3200 fourcc=0x34325258 at PA 0x13c7a0000
+Error: Image at 0013FCB2000 start failed: Unsupported
+Error: Image at 0013FC37000 start failed: Not Found
+Error: Image at 0013FB5D000 start failed: Aborted
+Tpm2SubmitCommand - Tcg2 - Not Found
+Tpm2GetCapabilityPcrs fail!
+Tpm2SubmitCommand - Tcg2 - Not Found
+[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01HBdsDxe: loading Boot0001 "UEFI QEMU NVMe Ctrl WIN11IOS01 1" from PciRoot(0x0)/Pci(0x2,0x0)/NVMe(0x1,00-00-00-00-00-00-00-00)
+ConvertPages: failed to find range 10000000 - 10340FFF
+BdsDxe: starting Boot0001 "UEFI QEMU NVMe Ctrl WIN11IOS01 1" from PciRoot(0x0)/Pci(0x2,0x0)/NVMe(0x1,00-00-00-00-00-00-00-00)
+ConvertPages: failed to find range 102000 - 102FFF
+winvm: guest requested PSCI SYSTEM_RESET — rebooting...
+UEFI firmware (version edk2-stable202408-prebuilt.qemu.org built at 16:28:50 on Sep 12 2024)
+ArmTrngLib could not be correctly initialized.
+Error: Image at 0013FDB6000 start failed: 00000001
+winvm: ramfb configured 800x600 stride=3200 fourcc=0x34325258 at PA 0x13c7a0000
+Error: Image at 0013FCB2000 start failed: Unsupported
+Error: Image at 0013FC37000 start failed: Not Found
+Error: Image at 0013FB5D000 start failed: Aborted
+Tpm2SubmitCommand - Tcg2 - Not Found
+Tpm2GetCapabilityPcrs fail!
+Tpm2SubmitCommand - Tcg2 - Not Found
+[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01HBdsDxe: loading Boot0002 "Windows Boot Manager" from HD(1,GPT,BD71F200-49E2-44FD-8305-EFD90B4E458C,0x800,0x32000)/\EFI\Microsoft\Boot\bootmgfw.efi
+ConvertPages: failed to find range 10000000 - 10340FFF
+BdsDxe: starting Boot0002 "Windows Boot Manager" from HD(1,GPT,BD71F200-49E2-44FD-8305-EFD90B4E458C,0x800,0x32000)/\EFI\Microsoft\Boot\bootmgfw.efi
+ConvertPages: failed to find range 102000 - 102FFF
+
+winvm: stopped (halt)
